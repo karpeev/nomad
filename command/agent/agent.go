@@ -628,6 +628,10 @@ func (a *Agent) Shutdown() error {
 		a.logger.Printf("[ERR] agent: shutting down consul service failed: %v", err)
 	}
 
+	if err := a.consul.Shutdown(); err != nil {
+		a.logger.Printf("[ERR] agent: shutting down Consul client failed: %v", err)
+	}
+
 	a.logger.Println("[INFO] agent: shutdown complete")
 	a.shutdown = true
 	close(a.shutdownCh)
@@ -717,7 +721,7 @@ func (a *Agent) setupConsulSyncer() error {
 
 // setupConsul creates the Consul client and starts its main Run loop.
 func (a *Agent) setupConsul() error {
-	client, err := consul.NewClient(a.config.Consul, a.shutdownCh, a.logger)
+	client, err := consul.NewClient(a.config.Consul, a.logger)
 	if err != nil {
 		return err
 	}
