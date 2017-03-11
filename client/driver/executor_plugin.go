@@ -149,14 +149,6 @@ func (e *ExecutorRPCServer) UpdateTask(args *structs.Task, resp *interface{}) er
 	return e.Impl.UpdateTask(args)
 }
 
-func (e *ExecutorRPCServer) SyncServices(args SyncServicesArgs, resp *interface{}) error {
-	return e.Impl.SyncServices(args.Ctx)
-}
-
-func (e *ExecutorRPCServer) DeregisterServices(args interface{}, resp *interface{}) error {
-	return e.Impl.DeregisterServices()
-}
-
 func (e *ExecutorRPCServer) Version(args interface{}, version *executor.ExecutorVersion) error {
 	ver, err := e.Impl.Version()
 	if ver != nil {

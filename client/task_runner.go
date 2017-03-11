@@ -175,7 +175,7 @@ type SignalEvent struct {
 func NewTaskRunner(logger *log.Logger, config *config.Config,
 	updater TaskStateUpdater, taskDir *allocdir.TaskDir,
 	alloc *structs.Allocation, task *structs.Task,
-	vaultClient vaultclient.VaultClient) *TaskRunner {
+	vaultClient vaultclient.VaultClient, consulClient *consul.Client) *TaskRunner {
 
 	// Merge in the task resources
 	task.Resources = alloc.TaskResources[task.Name]
@@ -187,12 +187,6 @@ func NewTaskRunner(logger *log.Logger, config *config.Config,
 		return nil
 	}
 	restartTracker := newRestartTracker(tg.RestartPolicy, alloc.Job.Type)
-
-	//TODO This should be injected not created
-	consulClient, err := consul.NewClient(config.ConsulConfig, logger)
-	if err != nil {
-		panic(err)
-	}
 
 	tc := &TaskRunner{
 		config:           config,
@@ -1339,11 +1333,14 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 
 	// Update will update resources and store the new kill timeout.
 	var mErr multierror.Error
+	var scriptExec consul.ScriptExecutor
 	r.handleLock.Lock()
 	if r.handle != nil {
 		if err := r.handle.Update(updatedTask); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("updating task resources failed: %v", err))
 		}
+		//TODO Add validation so this assertion should never fail
+		scriptExec, _ = r.handle.(consul.ScriptExecutor)
 	}
 	r.handleLock.Unlock()
 
@@ -1355,6 +1352,13 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 	// Store the updated alloc.
 	r.alloc = update
 	r.task = updatedTask
+
+	//FIXME Need to diff old and new services/checks and reg/dereg appropriately
+	if err := r.consul.RegisterTask(r.alloc.ID, r.task, scriptExec); err != nil {
+		//TODO handle errors?!
+		//TODO could break into prepare & submit steps as only preperation can error...
+		r.logger.Printf("[ERR] client: FIXME failed to register task what now %s", err)
+	}
 	return mErr.ErrorOrNil()
 }
 

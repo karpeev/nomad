@@ -294,9 +294,6 @@ func (d *JavaDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		doneCh:          make(chan struct{}),
 		waitCh:          make(chan *dstructs.WaitResult, 1),
 	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		d.logger.Printf("[ERR] driver.java: error registering services with consul for task: %q: %v", task.Name, err)
-	}
 	go h.run()
 	return h, nil
 }
@@ -356,10 +353,6 @@ func (d *JavaDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		doneCh:          make(chan struct{}),
 		waitCh:          make(chan *dstructs.WaitResult, 1),
 	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		d.logger.Printf("[ERR] driver.java: error registering services with consul: %v", err)
-	}
-
 	go h.run()
 	return h, nil
 }
@@ -443,11 +436,6 @@ func (h *javaHandle) run() {
 				h.logger.Printf("[ERR] driver.java: error killing user process: %v", e)
 			}
 		}
-	}
-
-	// Remove services
-	if err := h.executor.DeregisterServices(); err != nil {
-		h.logger.Printf("[ERR] driver.java: failed to kill the deregister services: %v", err)
 	}
 
 	// Exit the executor

@@ -14,14 +14,45 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/nomad/structs"
-	"github.com/hashicorp/nomad/nomad/structs/config"
 )
 
 var mark = struct{}{}
 
+const (
+	// nomadServicePrefix is the first prefix that scopes all Nomad registered
+	// services
+	nomadServicePrefix = "_nomad"
+
+	// The periodic time interval for syncing services and checks with Consul
+	defaultSyncInterval = 6 * time.Second
+
+	// ttlCheckBuffer is the time interval that Nomad can take to report Consul
+	// the check result
+	ttlCheckBuffer = 31 * time.Second
+
+	// DefaultQueryWaitDuration is the max duration the Consul Agent will
+	// spend waiting for a response from a Consul Query.
+	DefaultQueryWaitDuration = 2 * time.Second
+
+	// ServiceTagHTTP is the tag assigned to HTTP services
+	ServiceTagHTTP = "http"
+
+	// ServiceTagRPC is the tag assigned to RPC services
+	ServiceTagRPC = "rpc"
+
+	// ServiceTagSerf is the tag assigned to Serf services
+	ServiceTagSerf = "serf"
+)
+
 //TODO rename?!
 type ScriptExecutor interface {
 	Exec(ctx context.Context, cmd string, args []string) ([]byte, int, error)
+}
+
+// CatalogAPI is the consul/api.Catalog API used by Nomad.
+type CatalogAPI interface {
+	Datacenters() ([]string, error)
+	Service(service, tag string, q *api.QueryOptions) ([]*api.CatalogService, *api.QueryMeta, error)
 }
 
 //TODO rename?!
@@ -63,17 +94,9 @@ type Client struct {
 	agentLock sync.Mutex
 }
 
-func NewClient(consulConfig *config.ConsulConfig, logger *log.Logger) (*Client, error) {
-	apiConf, err := consulConfig.ApiConfig()
-	if err != nil {
-		return nil, err
-	}
-	client, err := api.NewClient(apiConf)
-	if err != nil {
-		return nil, err
-	}
+func NewClient(consulClient *api.Client, logger *log.Logger) (*Client, error) {
 	return &Client{
-		client:        client,
+		client:        consulClient,
 		logger:        logger,
 		retryInterval: defaultSyncInterval, //TODO what should this default to?!
 		syncInterval:  defaultSyncInterval,

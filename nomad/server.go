@@ -144,8 +144,8 @@ type Server struct {
 	heartbeatTimers     map[string]*time.Timer
 	heartbeatTimersLock sync.Mutex
 
-	// consulSyncer advertises this Nomad Agent with Consul
-	consulSyncer *consul.Syncer
+	// consulCatalog is used for discovering other Nomad Servers via Consul
+	consulCatalog consul.CatalogAPI
 
 	// vault is the client for communicating with Vault.
 	vault VaultClient
@@ -175,7 +175,7 @@ type endpoints struct {
 
 // NewServer is used to construct a new Nomad server from the
 // configuration, potentially returning an error
-func NewServer(config *Config, consulSyncer *consul.Syncer, logger *log.Logger) (*Server, error) {
+func NewServer(config *Config, consulCatalog consul.CatalogAPI, logger *log.Logger) (*Server, error) {
 	// Check the protocol version
 	if err := config.CheckVersion(); err != nil {
 		return nil, err
@@ -216,20 +216,20 @@ func NewServer(config *Config, consulSyncer *consul.Syncer, logger *log.Logger) 
 
 	// Create the server
 	s := &Server{
-		config:       config,
-		consulSyncer: consulSyncer,
-		connPool:     NewPool(config.LogOutput, serverRPCCache, serverMaxStreams, tlsWrap),
-		logger:       logger,
-		rpcServer:    rpc.NewServer(),
-		peers:        make(map[string][]*serverParts),
-		localPeers:   make(map[raft.ServerAddress]*serverParts),
-		reconcileCh:  make(chan serf.Member, 32),
-		eventCh:      make(chan serf.Event, 256),
-		evalBroker:   evalBroker,
-		blockedEvals: blockedEvals,
-		planQueue:    planQueue,
-		rpcTLS:       incomingTLS,
-		shutdownCh:   make(chan struct{}),
+		config:        config,
+		consulCatalog: consulCatalog,
+		connPool:      NewPool(config.LogOutput, serverRPCCache, serverMaxStreams, tlsWrap),
+		logger:        logger,
+		rpcServer:     rpc.NewServer(),
+		peers:         make(map[string][]*serverParts),
+		localPeers:    make(map[raft.ServerAddress]*serverParts),
+		reconcileCh:   make(chan serf.Member, 32),
+		eventCh:       make(chan serf.Event, 256),
+		evalBroker:    evalBroker,
+		blockedEvals:  blockedEvals,
+		planQueue:     planQueue,
+		rpcTLS:        incomingTLS,
+		shutdownCh:    make(chan struct{}),
 	}
 
 	// Create the periodic dispatcher for launching periodic jobs.
@@ -546,8 +546,7 @@ func (s *Server) setupBootstrapHandler() error {
 
 		s.logger.Printf("[DEBUG] server.nomad: lost contact with Nomad quorum, falling back to Consul for server list")
 
-		consulCatalog := s.consulSyncer.ConsulClient().Catalog()
-		dcs, err := consulCatalog.Datacenters()
+		dcs, err := s.consulCatalog.Datacenters()
 		if err != nil {
 			peersTimeout.Reset(peersPollInterval + lib.RandomStagger(peersPollInterval/peersPollJitterFactor))
 			return fmt.Errorf("server.nomad: unable to query Consul datacenters: %v", err)
@@ -574,7 +573,7 @@ func (s *Server) setupBootstrapHandler() error {
 				Near:       "_agent",
 				WaitTime:   consul.DefaultQueryWaitDuration,
 			}
-			consulServices, _, err := consulCatalog.Service(nomadServerServiceName, consul.ServiceTagSerf, consulOpts)
+			consulServices, _, err := s.consulCatalog.Service(nomadServerServiceName, consul.ServiceTagSerf, consulOpts)
 			if err != nil {
 				err := fmt.Errorf("failed to query service %q in Consul datacenter %q: %v", nomadServerServiceName, dc, err)
 				s.logger.Printf("[WARN] server.nomad: %v", err)

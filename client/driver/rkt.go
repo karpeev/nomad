@@ -474,9 +474,6 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 		doneCh:         make(chan struct{}),
 		waitCh:         make(chan *dstructs.WaitResult, 1),
 	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		h.logger.Printf("[ERR] driver.rkt: error registering services for task: %q: %v", task.Name, err)
-	}
 	go h.run()
 	return h, nil
 }
@@ -515,9 +512,6 @@ func (d *RktDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error
 		maxKillTimeout: id.MaxKillTimeout,
 		doneCh:         make(chan struct{}),
 		waitCh:         make(chan *dstructs.WaitResult, 1),
-	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		h.logger.Printf("[ERR] driver.rkt: error registering services: %v", err)
 	}
 	go h.run()
 	return h, nil
@@ -591,10 +585,6 @@ func (h *rktHandle) run() {
 		if e := killProcess(h.executorPid); e != nil {
 			h.logger.Printf("[ERROR] driver.rkt: error killing user process: %v", e)
 		}
-	}
-	// Remove services
-	if err := h.executor.DeregisterServices(); err != nil {
-		h.logger.Printf("[ERR] driver.rkt: failed to deregister services: %v", err)
 	}
 
 	// Exit the executor

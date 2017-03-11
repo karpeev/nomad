@@ -165,9 +165,6 @@ func (d *RawExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandl
 		doneCh:         make(chan struct{}),
 		waitCh:         make(chan *dstructs.WaitResult, 1),
 	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		h.logger.Printf("[ERR] driver.raw_exec: error registering services with consul for task: %q: %v", task.Name, err)
-	}
 	go h.run()
 	return h, nil
 }
@@ -214,9 +211,6 @@ func (d *RawExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, e
 		version:        id.Version,
 		doneCh:         make(chan struct{}),
 		waitCh:         make(chan *dstructs.WaitResult, 1),
-	}
-	if err := h.executor.SyncServices(consulContext(d.config, "")); err != nil {
-		h.logger.Printf("[ERR] driver.raw_exec: error registering services with consul: %v", err)
 	}
 	go h.run()
 	return h, nil
@@ -293,10 +287,6 @@ func (h *rawExecHandle) run() {
 		if e := killProcess(h.userPid); e != nil {
 			h.logger.Printf("[ERR] driver.raw_exec: error killing user process: %v", e)
 		}
-	}
-	// Remove services
-	if err := h.executor.DeregisterServices(); err != nil {
-		h.logger.Printf("[ERR] driver.raw_exec: failed to deregister services: %v", err)
 	}
 
 	// Exit the executor

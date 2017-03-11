@@ -56,8 +56,6 @@ type Executor interface {
 	Exit() error
 	UpdateLogConfig(logConfig *structs.LogConfig) error
 	UpdateTask(task *structs.Task) error
-	SyncServices(ctx *ConsulContext) error
-	DeregisterServices() error
 	Version() (*ExecutorVersion, error)
 	Stats() (*cstructs.TaskResourceUsage, error)
 	Signal(s os.Signal) error
@@ -181,7 +179,6 @@ type UniversalExecutor struct {
 
 	resConCtx resourceContainerContext
 
-	consulSyncer   *consul.Syncer
 	consulCtx      *ConsulContext
 	totalCpuStats  *stats.CpuStats
 	userCpuStats   *stats.CpuStats
@@ -362,26 +359,7 @@ func (e *UniversalExecutor) UpdateTask(task *structs.Task) error {
 		e.lre.FileSize = fileSize
 	}
 	e.rotatorLock.Unlock()
-
-	// Re-syncing task with Consul agent
-	if e.consulSyncer != nil {
-		e.interpolateServices(e.ctx.Task)
-		domain := consul.NewExecutorDomain(e.ctx.AllocID, task.Name)
-		serviceMap := generateServiceKeys(e.ctx.AllocID, task.Services)
-		e.consulSyncer.SetServices(domain, serviceMap)
-	}
 	return nil
-}
-
-// generateServiceKeys takes a list of interpolated Nomad Services and returns a map
-// of ServiceKeys to Nomad Services.
-func generateServiceKeys(allocID string, services []*structs.Service) map[consul.ServiceKey]*structs.Service {
-	keys := make(map[consul.ServiceKey]*structs.Service, len(services))
-	for _, service := range services {
-		key := consul.GenerateServiceKey(service)
-		keys[key] = service
-	}
-	return keys
 }
 
 func (e *UniversalExecutor) wait() {
@@ -449,10 +427,6 @@ func (e *UniversalExecutor) Exit() error {
 		e.lro.Close()
 	}
 
-	if e.consulSyncer != nil {
-		e.consulSyncer.Shutdown()
-	}
-
 	// If the executor did not launch a process, return.
 	if e.command == nil {
 		return nil
@@ -495,38 +469,6 @@ func (e *UniversalExecutor) ShutDown() error {
 	}
 	if err = proc.Signal(os.Interrupt); err != nil && err.Error() != finishedErr {
 		return fmt.Errorf("executor.shutdown error: %v", err)
-	}
-	return nil
-}
-
-// SyncServices syncs the services of the task that the executor is running with
-// Consul
-func (e *UniversalExecutor) SyncServices(ctx *ConsulContext) error {
-	e.logger.Printf("[INFO] executor: registering services")
-	e.consulCtx = ctx
-	if e.consulSyncer == nil {
-		cs, err := consul.NewSyncer(ctx.ConsulConfig, e.shutdownCh, e.logger)
-		if err != nil {
-			return err
-		}
-		e.consulSyncer = cs
-		go e.consulSyncer.Run()
-	}
-	e.interpolateServices(e.ctx.Task)
-	e.consulSyncer.SetDelegatedChecks(e.createCheckMap(), e.createCheck)
-	e.consulSyncer.SetAddrFinder(e.ctx.Task.FindHostAndPortFor)
-	domain := consul.NewExecutorDomain(e.ctx.AllocID, e.ctx.Task.Name)
-	serviceMap := generateServiceKeys(e.ctx.AllocID, e.ctx.Task.Services)
-	e.consulSyncer.SetServices(domain, serviceMap)
-	return nil
-}
-
-// DeregisterServices removes the services of the task that the executor is
-// running from Consul
-func (e *UniversalExecutor) DeregisterServices() error {
-	e.logger.Printf("[INFO] executor: de-registering services and shutting down consul service")
-	if e.consulSyncer != nil {
-		return e.consulSyncer.Shutdown()
 	}
 	return nil
 }

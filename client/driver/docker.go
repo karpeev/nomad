@@ -1354,11 +1354,6 @@ func (h *DockerHandle) run() {
 
 	close(h.doneCh)
 
-	// Remove services
-	if err := h.executor.DeregisterServices(); err != nil {
-		h.logger.Printf("[ERR] driver.docker: error deregistering services: %v", err)
-	}
-
 	// Shutdown the syslog collector
 	if err := h.executor.Exit(); err != nil {
 		h.logger.Printf("[ERR] driver.docker: failed to kill the syslog collector: %v", err)
