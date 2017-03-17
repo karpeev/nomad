@@ -1331,15 +1331,15 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 	// Merge in the task resources
 	updatedTask.Resources = update.TaskResources[updatedTask.Name]
 
-	// Update will update resources and store the new kill timeout.
 	var mErr multierror.Error
 	var scriptExec consul.ScriptExecutor
 	r.handleLock.Lock()
 	if r.handle != nil {
+		// Update will update resources and store the new kill timeout.
 		if err := r.handle.Update(updatedTask); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("updating task resources failed: %v", err))
 		}
-		//TODO Add validation so this assertion should never fail
+		// Not all drivers support Exec (eg QEMU)
 		scriptExec, _ = r.handle.(consul.ScriptExecutor)
 	}
 	r.handleLock.Unlock()
@@ -1349,15 +1349,16 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 		r.restartTracker.SetPolicy(tg.RestartPolicy)
 	}
 
+	// Deregister the old service+checks
+	r.consul.RemoveTask(r.alloc.ID, r.task)
+
 	// Store the updated alloc.
 	r.alloc = update
 	r.task = updatedTask
 
-	//FIXME Need to diff old and new services/checks and reg/dereg appropriately
+	// Register the new service+checks
 	if err := r.consul.RegisterTask(r.alloc.ID, r.task, scriptExec); err != nil {
-		//TODO handle errors?!
-		//TODO could break into prepare & submit steps as only preperation can error...
-		r.logger.Printf("[ERR] client: FIXME failed to register task what now %s", err)
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("error registering updated task with consul: %v", err))
 	}
 	return mErr.ErrorOrNil()
 }
@@ -1367,6 +1368,9 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 // given limit. It returns whether the task was destroyed and the error
 // associated with the last kill attempt.
 func (r *TaskRunner) handleDestroy() (destroyed bool, err error) {
+	// Remove from Consul
+	r.consul.RemoveTask(r.alloc.ID, r.task)
+
 	// Cap the number of times we attempt to kill the task.
 	for i := 0; i < killFailureLimit; i++ {
 		if err = r.handle.Kill(); err != nil {
