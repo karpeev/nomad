@@ -44,7 +44,8 @@ const (
 	ServiceTagSerf = "serf"
 )
 
-//TODO rename?!
+// ScriptExecutor is the interface the ServiceClient uses to execute script
+// checks inside a container.
 type ScriptExecutor interface {
 	Exec(ctx context.Context, cmd string, args []string) ([]byte, int, error)
 }
@@ -55,10 +56,18 @@ type CatalogAPI interface {
 	Service(service, tag string, q *api.QueryOptions) ([]*api.CatalogService, *api.QueryMeta, error)
 }
 
-//TODO rename?!
+// AgentAPI is the consul/api.Agent API used by Nomad.
+type AgentAPI interface {
+	CheckRegister(check *api.AgentCheckRegistration) error
+	CheckDeregister(checkID string) error
+	ServiceRegister(service *api.AgentServiceRegistration) error
+	ServiceDeregister(serviceID string) error
+	UpdateTTL(id, output, status string) error
+}
+
+// ServiceClient handles task and agent service registration with Consul.
 type ServiceClient struct {
-	//TODO switch to interface for testing
-	client        *api.Client
+	client        AgentAPI
 	logger        *log.Logger
 	retryInterval time.Duration
 	syncInterval  time.Duration
@@ -94,9 +103,9 @@ type ServiceClient struct {
 	agentLock sync.Mutex
 }
 
-// NewClient creates a new Consul ServiceClient from an existing Consul API
+// NewServiceClient creates a new Consul ServiceClient from an existing Consul API
 // Client and logger.
-func NewClient(consulClient *api.Client, logger *log.Logger) *ServiceClient {
+func NewServiceClient(consulClient AgentAPI, logger *log.Logger) *ServiceClient {
 	return &ServiceClient{
 		client:        consulClient,
 		logger:        logger,
@@ -115,8 +124,8 @@ func NewClient(consulClient *api.Client, logger *log.Logger) *ServiceClient {
 	}
 }
 
-// Run the Consul main loop which performs registrations and deregistrations
-// against Consul. It should be called exactly once.
+// Run the Consul main loop which retries operations against Consul. It should
+// be called exactly once.
 func (c *ServiceClient) Run() {
 	defer close(c.runningCh)
 	timer := time.NewTimer(0)
@@ -132,7 +141,7 @@ func (c *ServiceClient) Run() {
 		case <-timer.C:
 			if err := c.sync(); err != nil {
 				c.logger.Printf("[WARN] consul: failed to update consul: %v", err)
-				//TODO Log and jitter/backoff
+				//TODO Log? and jitter/backoff
 				timer.Reset(c.retryInterval)
 			}
 		case <-c.shutdownCh:
@@ -182,7 +191,7 @@ func (c *ServiceClient) sync() error {
 
 	// Register Services
 	for id, service := range regServices {
-		if err = c.client.Agent().ServiceRegister(service); err != nil {
+		if err = c.client.ServiceRegister(service); err != nil {
 			goto ERROR
 		}
 		delete(regServices, id)
@@ -190,7 +199,7 @@ func (c *ServiceClient) sync() error {
 
 	// Register Checks
 	for id, check := range regChecks {
-		if err = c.client.Agent().CheckRegister(check); err != nil {
+		if err = c.client.CheckRegister(check); err != nil {
 			goto ERROR
 		}
 		delete(regChecks, id)
@@ -198,7 +207,7 @@ func (c *ServiceClient) sync() error {
 
 	// Deregister Services
 	for id := range deregServices {
-		if err = c.client.Agent().ServiceDeregister(id); err != nil {
+		if err = c.client.ServiceDeregister(id); err != nil {
 			goto ERROR
 		}
 		delete(deregServices, id)
@@ -206,7 +215,7 @@ func (c *ServiceClient) sync() error {
 
 	// Deregister Checks
 	for id := range deregChecks {
-		if err = c.client.Agent().CheckDeregister(id); err != nil {
+		if err = c.client.CheckDeregister(id); err != nil {
 			goto ERROR
 		}
 		delete(deregChecks, id)
@@ -348,7 +357,7 @@ func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec Sc
 				if exec == nil {
 					return fmt.Errorf("driver %q doesn't support script checks", task.Driver)
 				}
-				scriptChecks[checkID] = newScriptCheck(checkID, check, exec, c.client.Agent(), c.logger, c.shutdownCh)
+				scriptChecks[checkID] = newScriptCheck(checkID, check, exec, c.client, c.logger, c.shutdownCh)
 			}
 			host, port := serviceReg.Address, serviceReg.Port
 			if check.PortLabel != "" {
@@ -464,14 +473,14 @@ func (c *ServiceClient) Shutdown() error {
 	// Deregister agent services and checks
 	c.agentLock.Lock()
 	for id := range c.agentServices {
-		if err := c.client.Agent().ServiceDeregister(id); err != nil {
+		if err := c.client.ServiceDeregister(id); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
 		}
 	}
 
 	// Deregister Checks
 	for id := range c.agentChecks {
-		if err := c.client.Agent().CheckDeregister(id); err != nil {
+		if err := c.client.CheckDeregister(id); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
 		}
 	}

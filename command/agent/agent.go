@@ -671,10 +671,12 @@ func (a *Agent) setupConsul(consulConfig *config.ConsulConfig) error {
 	if err != nil {
 		return err
 	}
+
+	// Create Consul Catalog client for service discovery.
 	a.consulCatalog = client.Catalog()
 
-	// Create Nomad Consul client used for service advertisement and checks
-	a.consulService = consul.NewClient(client, a.logger)
+	// Create Consul Service client for service advertisement and checks.
+	a.consulService = consul.NewServiceClient(client.Agent(), a.logger)
 	go a.consulService.Run()
 	return nil
 }
