@@ -252,18 +252,6 @@ ERROR:
 	return err
 }
 
-// DiscoverServers tries to discover Nomad servers in a region. The results are
-// ordered with servers in the same datacenter first.
-//
-// If the context is cancelled nil is returned.
-func (c *Client) DiscoverServers(ctx context.Context, region, dc string) <-chan []string {
-	resp := make(chan []string, 1)
-	go func() {
-		panic("TODO - actual server discovery")
-	}()
-	return resp
-}
-
 // RegisterAgent registers Nomad agents (client or server). Script checks are
 // not supported and will return an error. Registration is asynchronous.
 //
