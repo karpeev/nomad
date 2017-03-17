@@ -56,7 +56,7 @@ type CatalogAPI interface {
 }
 
 //TODO rename?!
-type Client struct {
+type ServiceClient struct {
 	//TODO switch to interface for testing
 	client        *api.Client
 	logger        *log.Logger
@@ -94,8 +94,10 @@ type Client struct {
 	agentLock sync.Mutex
 }
 
-func NewClient(consulClient *api.Client, logger *log.Logger) (*Client, error) {
-	return &Client{
+// NewClient creates a new Consul ServiceClient from an existing Consul API
+// Client and logger.
+func NewClient(consulClient *api.Client, logger *log.Logger) *ServiceClient {
+	return &ServiceClient{
 		client:        consulClient,
 		logger:        logger,
 		retryInterval: defaultSyncInterval, //TODO what should this default to?!
@@ -110,12 +112,12 @@ func NewClient(consulClient *api.Client, logger *log.Logger) (*Client, error) {
 		scriptChecks:  make(map[string]func()),
 		agentServices: make(map[string]struct{}, 8),
 		agentChecks:   make(map[string]struct{}, 8),
-	}, nil
+	}
 }
 
 // Run the Consul main loop which performs registrations and deregistrations
 // against Consul. It should be called exactly once.
-func (c *Client) Run() {
+func (c *ServiceClient) Run() {
 	defer close(c.runningCh)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -139,14 +141,14 @@ func (c *Client) Run() {
 	}
 }
 
-func (c *Client) forceSync() {
+func (c *ServiceClient) forceSync() {
 	select {
 	case c.syncCh <- mark:
 	default:
 	}
 }
 
-func (c *Client) sync() error {
+func (c *ServiceClient) sync() error {
 	// Shallow copy and reset the pending operations fields
 	c.regLock.Lock()
 	regServices := make(map[string]*api.AgentServiceRegistration, len(c.regServices))
@@ -256,7 +258,7 @@ ERROR:
 // not supported and will return an error. Registration is asynchronous.
 //
 // Agents will be deregistered when Shutdown is called.
-func (c *Client) RegisterAgent(role string, services []*structs.Service) error {
+func (c *ServiceClient) RegisterAgent(role string, services []*structs.Service) error {
 	regs := make([]*api.AgentServiceRegistration, len(services))
 	checks := make([]*api.AgentCheckRegistration, 0, len(services))
 
@@ -323,7 +325,7 @@ func (c *Client) RegisterAgent(role string, services []*structs.Service) error {
 // exec is nil and a script check exists an error is returned.
 //
 // Actual communication with Consul is done asynchrously (see Run).
-func (c *Client) RegisterTask(allocID string, task *structs.Task, exec ScriptExecutor) error {
+func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec ScriptExecutor) error {
 	regs := make([]*api.AgentServiceRegistration, len(task.Services))
 	checks := make([]*api.AgentCheckRegistration, 0, len(task.Services)*2) // just guess at size
 	scriptChecks := map[string]*scriptCheck{}
@@ -369,7 +371,7 @@ func (c *Client) RegisterTask(allocID string, task *structs.Task, exec ScriptExe
 // DeregisterTask from Consul. Removes all service entries and checks.
 //
 // Actual communication with Consul is done asynchrously (see Run).
-func (c *Client) RemoveTask(allocID string, task *structs.Task) {
+func (c *ServiceClient) RemoveTask(allocID string, task *structs.Task) {
 	deregs := make([]string, len(task.Services))
 	checks := make([]string, 0, len(task.Services)*2) // just guess at size
 
@@ -399,7 +401,7 @@ func (c *Client) RemoveTask(allocID string, task *structs.Task) {
 	c.enqueueDeregs(deregs, checks)
 }
 
-func (c *Client) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api.AgentCheckRegistration, scriptChecks map[string]*scriptCheck) {
+func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api.AgentCheckRegistration, scriptChecks map[string]*scriptCheck) {
 	c.regLock.Lock()
 	for _, reg := range regs {
 		// Add reg
@@ -422,7 +424,7 @@ func (c *Client) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api
 	c.forceSync()
 }
 
-func (c *Client) enqueueDeregs(deregs []string, checks []string) {
+func (c *ServiceClient) enqueueDeregs(deregs []string, checks []string) {
 	c.regLock.Lock()
 	for _, dereg := range deregs {
 		// Add dereg
@@ -441,7 +443,7 @@ func (c *Client) enqueueDeregs(deregs []string, checks []string) {
 	c.forceSync()
 }
 
-func (c *Client) hasShutdown() bool {
+func (c *ServiceClient) hasShutdown() bool {
 	select {
 	case <-c.shutdownCh:
 		return true
@@ -451,7 +453,7 @@ func (c *Client) hasShutdown() bool {
 }
 
 // Shutdown the Consul client. Deregister agent from Consul.
-func (c *Client) Shutdown() error {
+func (c *ServiceClient) Shutdown() error {
 	if c.hasShutdown() {
 		return nil
 	}

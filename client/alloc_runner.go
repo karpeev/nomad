@@ -61,7 +61,7 @@ type AllocRunner struct {
 	updateCh chan *structs.Allocation
 
 	vaultClient  vaultclient.VaultClient
-	consulClient *consul.Client
+	consulClient *consul.ServiceClient
 
 	otherAllocDir *allocdir.AllocDir
 
@@ -99,7 +99,7 @@ type allocRunnerState struct {
 // NewAllocRunner is used to create a new allocation context
 func NewAllocRunner(logger *log.Logger, config *config.Config, updater AllocStateUpdater,
 	alloc *structs.Allocation, vaultClient vaultclient.VaultClient,
-	consulClient *consul.Client) *AllocRunner {
+	consulClient *consul.ServiceClient) *AllocRunner {
 
 	ar := &AllocRunner{
 		config:       config,

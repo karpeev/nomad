@@ -62,7 +62,7 @@ type TaskRunner struct {
 	logger         *log.Logger
 	alloc          *structs.Allocation
 	restartTracker *RestartTracker
-	consul         *consul.Client
+	consul         *consul.ServiceClient
 
 	// running marks whether the task is running
 	running     bool
@@ -175,7 +175,7 @@ type SignalEvent struct {
 func NewTaskRunner(logger *log.Logger, config *config.Config,
 	updater TaskStateUpdater, taskDir *allocdir.TaskDir,
 	alloc *structs.Allocation, task *structs.Task,
-	vaultClient vaultclient.VaultClient, consulClient *consul.Client) *TaskRunner {
+	vaultClient vaultclient.VaultClient, consulClient *consul.ServiceClient) *TaskRunner {
 
 	// Merge in the task resources
 	task.Resources = alloc.TaskResources[task.Name]

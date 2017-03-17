@@ -140,7 +140,7 @@ type Client struct {
 
 	// consulService is Nomad's custom Consul client for managing services
 	// and checks.
-	consulService *consul.Client
+	consulService *consul.ServiceClient
 
 	// consulCatalog is the subset of Consul's Catalog API Nomad uses.
 	consulCatalog consul.CatalogAPI
@@ -196,7 +196,7 @@ var (
 )
 
 // NewClient is used to create a new client from the given configuration
-func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulService *consul.Client, logger *log.Logger) (*Client, error) {
+func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulService *consul.ServiceClient, logger *log.Logger) (*Client, error) {
 	// Create the tls wrapper
 	var tlsWrap tlsutil.RegionWrapper
 	if cfg.TLSConfig.EnableRPC {

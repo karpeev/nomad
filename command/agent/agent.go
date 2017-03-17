@@ -49,7 +49,7 @@ type Agent struct {
 
 	// consulService is Nomad's custom Consul client for managing services
 	// and checks.
-	consulService *consul.Client
+	consulService *consul.ServiceClient
 
 	// consulCatalog is the subset of Consul's Catalog API Nomad uses.
 	consulCatalog consul.CatalogAPI
@@ -674,11 +674,7 @@ func (a *Agent) setupConsul(consulConfig *config.ConsulConfig) error {
 	a.consulCatalog = client.Catalog()
 
 	// Create Nomad Consul client used for service advertisement and checks
-	consulService, err := consul.NewClient(client, a.logger)
-	if err != nil {
-		return err
-	}
-	a.consulService = consulService
-	go consulService.Run()
+	a.consulService = consul.NewClient(client, a.logger)
+	go a.consulService.Run()
 	return nil
 }
