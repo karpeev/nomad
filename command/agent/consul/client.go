@@ -44,6 +44,12 @@ const (
 	ServiceTagSerf = "serf"
 )
 
+var (
+	// shutdownWait is how long Shutdown() should block waiting for
+	// enqueued operations to sync to Consul.
+	shutdownWait = time.Minute
+)
+
 // ScriptExecutor is the interface the ServiceClient uses to execute script
 // checks inside a container.
 type ScriptExecutor interface {
@@ -150,6 +156,8 @@ func (c *ServiceClient) Run() {
 	}
 }
 
+// forceSync asynchronously causes a sync to happen. Any operations enqueued
+// prior to calling forceSync will be synced.
 func (c *ServiceClient) forceSync() {
 	select {
 	case c.syncCh <- mark:
@@ -157,6 +165,7 @@ func (c *ServiceClient) forceSync() {
 	}
 }
 
+// sync enqueued operations.
 func (c *ServiceClient) sync() error {
 	// Shallow copy and reset the pending operations fields
 	c.regLock.Lock()
@@ -345,10 +354,11 @@ func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec Sc
 		serviceReg := &api.AgentServiceRegistration{
 			ID:      id,
 			Name:    service.Name,
-			Tags:    service.Tags,
+			Tags:    make([]string, len(service.Tags)),
 			Address: host,
 			Port:    port,
 		}
+		copy(serviceReg.Tags, service.Tags)
 		regs[i] = serviceReg
 
 		for _, check := range service.Checks {
@@ -377,7 +387,7 @@ func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec Sc
 	return nil
 }
 
-// DeregisterTask from Consul. Removes all service entries and checks.
+// RemoveTask from Consul. Removes all service entries and checks.
 //
 // Actual communication with Consul is done asynchrously (see Run).
 func (c *ServiceClient) RemoveTask(allocID string, task *structs.Task) {
@@ -410,6 +420,8 @@ func (c *ServiceClient) RemoveTask(allocID string, task *structs.Task) {
 	c.enqueueDeregs(deregs, checks)
 }
 
+// enqueueRegs enqueues service and check registrations for the next time
+// operations are sync'd to Consul.
 func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api.AgentCheckRegistration, scriptChecks map[string]*scriptCheck) {
 	c.regLock.Lock()
 	for _, reg := range regs {
@@ -433,6 +445,8 @@ func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks
 	c.forceSync()
 }
 
+// enqueueDeregs enqueues service and check removals for the next time
+// operations are sync'd to Consul.
 func (c *ServiceClient) enqueueDeregs(deregs []string, checks []string) {
 	c.regLock.Lock()
 	for _, dereg := range deregs {
@@ -452,21 +466,16 @@ func (c *ServiceClient) enqueueDeregs(deregs []string, checks []string) {
 	c.forceSync()
 }
 
-func (c *ServiceClient) hasShutdown() bool {
+// Shutdown the Consul client. Update running task registations and deregister
+// agent from Consul. Blocks up to shutdownWait before giving up on syncing
+// operations.
+func (c *ServiceClient) Shutdown() error {
 	select {
 	case <-c.shutdownCh:
-		return true
-	default:
-		return false
-	}
-}
-
-// Shutdown the Consul client. Deregister agent from Consul.
-func (c *ServiceClient) Shutdown() error {
-	if c.hasShutdown() {
 		return nil
+	default:
+		close(c.shutdownCh)
 	}
-	close(c.shutdownCh)
 
 	var mErr multierror.Error
 
@@ -493,9 +502,9 @@ func (c *ServiceClient) Shutdown() error {
 		if err := c.sync(); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
 		}
-	case <-time.After(time.Minute):
+	case <-time.After(shutdownWait):
 		// Don't wait forever though
-		c.logger.Printf("[WARN] consul: timed out waiting for Consul operations to complete")
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("timed out waiting for Consul operations to complete"))
 	}
 	return mErr.ErrorOrNil()
 }
