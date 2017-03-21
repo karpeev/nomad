@@ -103,7 +103,7 @@ type ServiceClient struct {
 
 	// script check cancel funcs to be called before their corresponding
 	// check is removed. Only accessed in sync() so not covered by regLock
-	runningScripts map[string]func()
+	runningScripts map[string]*scriptHandle
 
 	// regLock must be held while accessing reg and dereg maps
 	regLock sync.Mutex
@@ -133,7 +133,7 @@ func NewServiceClient(consulClient AgentAPI, logger *log.Logger) *ServiceClient 
 		deregServices:  make(map[string]struct{}),
 		deregChecks:    make(map[string]struct{}),
 		regScripts:     make(map[string]*scriptCheck),
-		runningScripts: make(map[string]func()),
+		runningScripts: make(map[string]*scriptHandle),
 		agentServices:  make(map[string]struct{}, 8),
 		agentChecks:    make(map[string]struct{}, 8),
 	}
@@ -250,9 +250,10 @@ func (c *ServiceClient) sync() error {
 		}
 		delete(deregChecks, id)
 
-		if cancel, ok := c.runningScripts[id]; ok {
+		if h, ok := c.runningScripts[id]; ok {
 			// This check is a script check; stop it
-			cancel()
+			c.logger.Printf("[DEBUG] consul: cancel'd %q", id)
+			h.cancel()
 			delete(c.runningScripts, id)
 		}
 	}
@@ -501,6 +502,9 @@ func (c *ServiceClient) Shutdown() error {
 
 	var mErr multierror.Error
 
+	// Don't let Shutdown block indefinitely
+	deadline := time.After(c.shutdownWait)
+
 	// Deregister agent services and checks
 	c.agentLock.Lock()
 	for id := range c.agentServices {
@@ -524,9 +528,20 @@ func (c *ServiceClient) Shutdown() error {
 		if err := c.sync(); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
 		}
-	case <-time.After(c.shutdownWait):
+	case <-deadline:
 		// Don't wait forever though
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("timed out waiting for Consul operations to complete"))
+		return mErr.ErrorOrNil()
+	}
+
+	// Give script checks time to exit (no need to lock as Run() has exited)
+	for _, h := range c.runningScripts {
+		select {
+		case <-h.wait():
+		case <-deadline:
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("timed out waiting for script checks to run"))
+			return mErr.ErrorOrNil()
+		}
 	}
 	return mErr.ErrorOrNil()
 }

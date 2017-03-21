@@ -15,6 +15,17 @@ type heartbeater interface {
 	UpdateTTL(id, output, status string) error
 }
 
+type scriptHandle struct {
+	// cancel the script
+	cancel func()
+	done   chan struct{}
+}
+
+// wait returns a chan that's closed when the script exits
+func (s *scriptHandle) wait() <-chan struct{} {
+	return s.done
+}
+
 type scriptCheck struct {
 	id    string
 	check *structs.ServiceCheck
@@ -38,58 +49,59 @@ func newScriptCheck(id string, check *structs.ServiceCheck, exec ScriptExecutor,
 
 // run this script check and return its cancel func. If the shutdownCh is
 // closed the check will be run once more before exiting.
-func (s *scriptCheck) run() func() {
+func (s *scriptCheck) run() *scriptHandle {
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(0)
+		defer timer.Stop()
 		for {
+			// Block until check is removed, Nomad is shutting
+			// down, or the check interval is up
 			select {
 			case <-ctx.Done():
-				s.logger.Printf("[DEBUG] consul.checks: DONE<----------")
 				// check has been removed
 				return
 			case <-s.shutdownCh:
-				s.logger.Printf("[DEBUG] consul.checks: SHUTDOWN<----------")
-				// Don't actually exit here, just make sure the timer ticks ASAP
-				if timer.Stop() {
-					timer.Reset(0)
-				}
+				// unblock but don't exit until after we heartbeat once more
 			case <-timer.C:
-				s.logger.Printf("[DEBUG] consul.checks: TICK<----------")
-				execctx, cancel := context.WithTimeout(ctx, s.check.Timeout)
-				output, code, err := s.exec.Exec(execctx, s.check.Command, s.check.Args)
-				cancel()
-				switch execctx.Err() {
-				case context.Canceled:
-					// check removed during execution; exit
-					return
-				case context.DeadlineExceeded:
-					s.logger.Printf("[DEBUG] consul.checks: check %q timed out (%s)", s.check.Name, s.check.Timeout)
-				}
-				state := api.HealthCritical
-				switch code {
-				case 0:
-					state = api.HealthPassing
-				case 1:
-					state = api.HealthWarning
-				}
-				if err != nil {
-					state = api.HealthCritical
-					output = []byte(err.Error())
-				}
-				if err := s.agent.UpdateTTL(s.id, string(output), state); err != nil {
-					//TODO Do something special on errors? Log? Retry faster?
-					s.logger.Printf("[DEBUG] consul.checks: update for check %q failed: %v", s.check.Name, err)
-				}
-				select {
-				case <-s.shutdownCh:
-					// We've been told to exit
-					return
-				default:
-					timer.Reset(s.check.Interval)
-				}
+				timer.Reset(s.check.Interval)
+			}
+
+			// Execute check script with timeout
+			execctx, cancel := context.WithTimeout(ctx, s.check.Timeout)
+			output, code, err := s.exec.Exec(execctx, s.check.Command, s.check.Args)
+			switch execctx.Err() {
+			case context.Canceled:
+				// check removed during execution; exit
+				return
+			case context.DeadlineExceeded:
+				s.logger.Printf("[WARN] consul.checks: check %q timed out (%s)", s.check.Name, s.check.Timeout)
+			}
+			cancel() // cleanup context
+			state := api.HealthCritical
+			switch code {
+			case 0:
+				state = api.HealthPassing
+			case 1:
+				state = api.HealthWarning
+			}
+			if err != nil {
+				state = api.HealthCritical
+				output = []byte(err.Error())
+			}
+			if err := s.agent.UpdateTTL(s.id, string(output), state); err != nil {
+				//TODO Do something special on errors? Log? Retry faster?
+				s.logger.Printf("[DEBUG] consul.checks: update for check %q failed: %v", s.check.Name, err)
+			}
+			select {
+			case <-s.shutdownCh:
+				// We've been told to exit
+				return
+			default:
 			}
 		}
 	}()
-	return cancel
+	return &scriptHandle{cancel: cancel, done: done}
 }
