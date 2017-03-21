@@ -45,14 +45,25 @@ func (s *scriptCheck) run() func() {
 		for {
 			select {
 			case <-ctx.Done():
+				s.logger.Printf("[DEBUG] consul.checks: DONE<----------")
+				// check has been removed
 				return
 			case <-s.shutdownCh:
-				//TODO run check once more before exiting
+				s.logger.Printf("[DEBUG] consul.checks: SHUTDOWN<----------")
+				// Don't actually exit here, just make sure the timer ticks ASAP
+				if timer.Stop() {
+					timer.Reset(0)
+				}
 			case <-timer.C:
+				s.logger.Printf("[DEBUG] consul.checks: TICK<----------")
 				execctx, cancel := context.WithTimeout(ctx, s.check.Timeout)
 				output, code, err := s.exec.Exec(execctx, s.check.Command, s.check.Args)
 				cancel()
-				if execctx.Err() == context.DeadlineExceeded {
+				switch execctx.Err() {
+				case context.Canceled:
+					// check removed during execution; exit
+					return
+				case context.DeadlineExceeded:
 					s.logger.Printf("[DEBUG] consul.checks: check %q timed out (%s)", s.check.Name, s.check.Timeout)
 				}
 				state := api.HealthCritical
@@ -67,9 +78,16 @@ func (s *scriptCheck) run() func() {
 					output = []byte(err.Error())
 				}
 				if err := s.agent.UpdateTTL(s.id, string(output), state); err != nil {
-					//TODO Do something special on errors? Log?
+					//TODO Do something special on errors? Log? Retry faster?
+					s.logger.Printf("[DEBUG] consul.checks: update for check %q failed: %v", s.check.Name, err)
 				}
-				timer.Reset(s.check.Interval)
+				select {
+				case <-s.shutdownCh:
+					// We've been told to exit
+					return
+				default:
+					timer.Reset(s.check.Interval)
+				}
 			}
 		}
 	}()

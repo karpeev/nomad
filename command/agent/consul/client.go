@@ -30,6 +30,10 @@ const (
 	// the check result
 	ttlCheckBuffer = 31 * time.Second
 
+	// defaultShutdownWait is how long Shutdown() should block waiting for
+	// enqueued operations to sync to Consul by default.
+	defaultShutdownWait = time.Minute
+
 	// DefaultQueryWaitDuration is the max duration the Consul Agent will
 	// spend waiting for a response from a Consul Query.
 	DefaultQueryWaitDuration = 2 * time.Second
@@ -42,12 +46,6 @@ const (
 
 	// ServiceTagSerf is the tag assigned to Serf services
 	ServiceTagSerf = "serf"
-)
-
-var (
-	// shutdownWait is how long Shutdown() should block waiting for
-	// enqueued operations to sync to Consul.
-	shutdownWait = time.Minute
 )
 
 // ScriptExecutor is the interface the ServiceClient uses to execute script
@@ -84,6 +82,10 @@ type ServiceClient struct {
 	// shutdownCh is closed when the client should shutdown
 	shutdownCh chan struct{}
 
+	// shutdownWait is how long Shutdown() blocks waiting for the final
+	// sync() to finish. Defaults to defaultShutdownWait
+	shutdownWait time.Duration
+
 	// syncCh triggers a sync in the main Run loop
 	syncCh chan struct{}
 
@@ -95,8 +97,13 @@ type ServiceClient struct {
 	deregServices map[string]struct{}
 	deregChecks   map[string]struct{}
 
-	// scriptChecks currently running and their cancel func
-	scriptChecks map[string]func()
+	// script checks to be run() after their corresponding check is
+	// registered
+	regScripts map[string]*scriptCheck
+
+	// script check cancel funcs to be called before their corresponding
+	// check is removed. Only accessed in sync() so not covered by regLock
+	runningScripts map[string]func()
 
 	// regLock must be held while accessing reg and dereg maps
 	regLock sync.Mutex
@@ -113,20 +120,22 @@ type ServiceClient struct {
 // Client and logger.
 func NewServiceClient(consulClient AgentAPI, logger *log.Logger) *ServiceClient {
 	return &ServiceClient{
-		client:        consulClient,
-		logger:        logger,
-		retryInterval: defaultSyncInterval, //TODO what should this default to?!
-		syncInterval:  defaultSyncInterval,
-		runningCh:     make(chan struct{}),
-		shutdownCh:    make(chan struct{}),
-		syncCh:        make(chan struct{}, 1),
-		regServices:   make(map[string]*api.AgentServiceRegistration),
-		regChecks:     make(map[string]*api.AgentCheckRegistration),
-		deregServices: make(map[string]struct{}),
-		deregChecks:   make(map[string]struct{}),
-		scriptChecks:  make(map[string]func()),
-		agentServices: make(map[string]struct{}, 8),
-		agentChecks:   make(map[string]struct{}, 8),
+		client:         consulClient,
+		logger:         logger,
+		retryInterval:  defaultSyncInterval, //TODO what should this default to?!
+		syncInterval:   defaultSyncInterval,
+		runningCh:      make(chan struct{}),
+		shutdownCh:     make(chan struct{}),
+		shutdownWait:   defaultShutdownWait,
+		syncCh:         make(chan struct{}, 1),
+		regServices:    make(map[string]*api.AgentServiceRegistration),
+		regChecks:      make(map[string]*api.AgentCheckRegistration),
+		deregServices:  make(map[string]struct{}),
+		deregChecks:    make(map[string]struct{}),
+		regScripts:     make(map[string]*scriptCheck),
+		runningScripts: make(map[string]func()),
+		agentServices:  make(map[string]struct{}, 8),
+		agentChecks:    make(map[string]struct{}, 8),
 	}
 }
 
@@ -181,6 +190,12 @@ func (c *ServiceClient) sync() error {
 	}
 	c.regChecks = map[string]*api.AgentCheckRegistration{}
 
+	regScripts := make(map[string]*scriptCheck, len(c.regScripts))
+	for k, v := range c.regScripts {
+		regScripts[k] = v
+	}
+	c.regScripts = map[string]*scriptCheck{}
+
 	deregServices := make(map[string]struct{}, len(c.deregServices))
 	for k := range c.deregServices {
 		deregServices[k] = mark
@@ -212,6 +227,12 @@ func (c *ServiceClient) sync() error {
 			goto ERROR
 		}
 		delete(regChecks, id)
+
+		// Run the script for this check if one exists
+		if script, ok := regScripts[id]; ok {
+			// This check is a script check; run it
+			c.runningScripts[id] = script.run()
+		}
 	}
 
 	// Deregister Services
@@ -228,6 +249,12 @@ func (c *ServiceClient) sync() error {
 			goto ERROR
 		}
 		delete(deregChecks, id)
+
+		if cancel, ok := c.runningScripts[id]; ok {
+			// This check is a script check; stop it
+			cancel()
+			delete(c.runningScripts, id)
+		}
 	}
 
 	c.logger.Printf("[DEBUG] consul: registered %d services / %d checks; deregisterd %d services / %d checks", regServiceN, regCheckN, deregServiceN, deregCheckN)
@@ -255,6 +282,13 @@ ERROR:
 			continue
 		}
 		c.regChecks[id] = check
+	}
+	for id, script := range regScripts {
+		if _, ok := c.regScripts[id]; ok {
+			// a new version of this script was added, drop this one
+			continue
+		}
+		c.regScripts[id] = script
 	}
 	for id, _ := range deregServices {
 		if _, ok := c.regServices[id]; ok {
@@ -346,7 +380,7 @@ func (c *ServiceClient) RegisterAgent(role string, services []*structs.Service) 
 func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec ScriptExecutor) error {
 	regs := make([]*api.AgentServiceRegistration, len(task.Services))
 	checks := make([]*api.AgentCheckRegistration, 0, len(task.Services)*2) // just guess at size
-	scriptChecks := map[string]*scriptCheck{}
+	var scriptChecks []*scriptCheck
 
 	for i, service := range task.Services {
 		id := makeTaskServiceID(allocID, task.Name, service)
@@ -358,6 +392,8 @@ func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec Sc
 			Address: host,
 			Port:    port,
 		}
+		// copy isn't strictly necessary but can avoid bugs especially
+		// with tests that may reuse Tasks
 		copy(serviceReg.Tags, service.Tags)
 		regs[i] = serviceReg
 
@@ -367,7 +403,7 @@ func (c *ServiceClient) RegisterTask(allocID string, task *structs.Task, exec Sc
 				if exec == nil {
 					return fmt.Errorf("driver %q doesn't support script checks", task.Driver)
 				}
-				scriptChecks[checkID] = newScriptCheck(checkID, check, exec, c.client, c.logger, c.shutdownCh)
+				scriptChecks = append(scriptChecks, newScriptCheck(checkID, check, exec, c.client, c.logger, c.shutdownCh))
 			}
 			host, port := serviceReg.Address, serviceReg.Port
 			if check.PortLabel != "" {
@@ -399,20 +435,7 @@ func (c *ServiceClient) RemoveTask(allocID string, task *structs.Task) {
 		deregs[i] = id
 
 		for _, check := range service.Checks {
-			checkID := createCheckID(id, check)
-			if check.Type == structs.ServiceCheckScript {
-				// Unlike registeration, deregistration can't
-				// be interrupted due to errors so we can
-				// cancel script checks as we go instead of
-				// doing it when deregs are enqueued
-				c.regLock.Lock()
-				if cancel, ok := c.scriptChecks[checkID]; ok {
-					cancel()
-				}
-				c.regLock.Unlock()
-				continue
-			}
-			checks = append(checks, checkID)
+			checks = append(checks, createCheckID(id, check))
 		}
 	}
 
@@ -422,7 +445,7 @@ func (c *ServiceClient) RemoveTask(allocID string, task *structs.Task) {
 
 // enqueueRegs enqueues service and check registrations for the next time
 // operations are sync'd to Consul.
-func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api.AgentCheckRegistration, scriptChecks map[string]*scriptCheck) {
+func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks []*api.AgentCheckRegistration, scriptChecks []*scriptCheck) {
 	c.regLock.Lock()
 	for _, reg := range regs {
 		// Add reg
@@ -436,9 +459,8 @@ func (c *ServiceClient) enqueueRegs(regs []*api.AgentServiceRegistration, checks
 		// Make sure it's not being removed
 		delete(c.deregChecks, check.ID)
 	}
-	// Start script checks and retain their cancel funcs
-	for checkID, check := range scriptChecks {
-		c.scriptChecks[checkID] = check.run()
+	for _, script := range scriptChecks {
+		c.regScripts[script.id] = script
 	}
 	c.regLock.Unlock()
 
@@ -502,7 +524,7 @@ func (c *ServiceClient) Shutdown() error {
 		if err := c.sync(); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
 		}
-	case <-time.After(shutdownWait):
+	case <-time.After(c.shutdownWait):
 		// Don't wait forever though
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("timed out waiting for Consul operations to complete"))
 	}
