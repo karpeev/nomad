@@ -348,6 +348,7 @@ func TestConsul_ShutdownOK(t *testing.T) {
 // TestConsul_ShutdownSlow tests the slow but ok path for the shutdown logic in
 // ServiceClient.
 func TestConsul_ShutdownSlow(t *testing.T) {
+	t.Parallel() // run the slow tests in parallel
 	ctx := setupFake()
 
 	// Add a script check to make sure its TTL gets updated
@@ -422,6 +423,7 @@ func TestConsul_ShutdownSlow(t *testing.T) {
 // TestConsul_ShutdownBlocked tests the blocked past deadline path for the
 // shutdown logic in ServiceClient.
 func TestConsul_ShutdownBlocked(t *testing.T) {
+	t.Parallel() // run the slow tests in parallel
 	ctx := setupFake()
 
 	// Add a script check to make sure its TTL gets updated
