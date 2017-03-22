@@ -23,7 +23,6 @@ import (
 	"github.com/hashicorp/nomad/client/driver/env"
 	"github.com/hashicorp/nomad/client/driver/logging"
 	"github.com/hashicorp/nomad/client/stats"
-	"github.com/hashicorp/nomad/command/agent/consul"
 	shelpers "github.com/hashicorp/nomad/helper/stats"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
@@ -602,45 +601,6 @@ func (e *UniversalExecutor) listenerUnix() (net.Listener, error) {
 	}
 
 	return net.Listen("unix", path)
-}
-
-// createCheck creates NomadCheck from a ServiceCheck
-func (e *UniversalExecutor) createCheck(check *structs.ServiceCheck, checkID string) (consul.Check, error) {
-	if check.Type == structs.ServiceCheckScript && e.ctx.Driver == "docker" {
-		return &DockerScriptCheck{
-			id:          checkID,
-			interval:    check.Interval,
-			timeout:     check.Timeout,
-			containerID: e.consulCtx.ContainerID,
-			logger:      e.logger,
-			cmd:         check.Command,
-			args:        check.Args,
-		}, nil
-	}
-
-	if check.Type == structs.ServiceCheckScript && (e.ctx.Driver == "exec" ||
-		e.ctx.Driver == "raw_exec" || e.ctx.Driver == "java") {
-		return &ExecScriptCheck{
-			id:          checkID,
-			interval:    check.Interval,
-			timeout:     check.Timeout,
-			cmd:         check.Command,
-			args:        check.Args,
-			taskDir:     e.ctx.TaskDir,
-			FSIsolation: e.command.FSIsolation,
-		}, nil
-
-	}
-	return nil, fmt.Errorf("couldn't create check for %v", check.Name)
-}
-
-// createCheckMap creates a map of checks that the executor will handle on it's
-// own
-func (e *UniversalExecutor) createCheckMap() map[string]struct{} {
-	checks := map[string]struct{}{
-		"script": struct{}{},
-	}
-	return checks
 }
 
 // interpolateServices interpolates tags in a service and checks with values from the
