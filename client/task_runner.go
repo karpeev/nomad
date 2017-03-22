@@ -1206,6 +1206,10 @@ func (r *TaskRunner) startTask() error {
 	r.handle = handle
 	r.handleLock.Unlock()
 
+	//FIXME is there a better place to do this? used to be in executor
+	// Prepare services
+	interpolateServices(r.getTaskEnv(), r.task)
+
 	//TODO Add validation so this assertion should never fail
 	// RegisterTask properly handles scriptExec being nil, so it just
 	// ignore the ok value.
@@ -1217,6 +1221,26 @@ func (r *TaskRunner) startTask() error {
 	}
 
 	return nil
+}
+
+// interpolateServices interpolates tags in a service and checks with values from the
+// task's environment.
+func interpolateServices(taskEnv *env.TaskEnvironment, task *structs.Task) {
+	for _, service := range task.Services {
+		for _, check := range service.Checks {
+			check.Name = taskEnv.ReplaceEnv(check.Name)
+			check.Type = taskEnv.ReplaceEnv(check.Type)
+			check.Command = taskEnv.ReplaceEnv(check.Command)
+			check.Args = taskEnv.ParseAndReplace(check.Args)
+			check.Path = taskEnv.ReplaceEnv(check.Path)
+			check.Protocol = taskEnv.ReplaceEnv(check.Protocol)
+			check.PortLabel = taskEnv.ReplaceEnv(check.PortLabel)
+			check.InitialStatus = taskEnv.ReplaceEnv(check.InitialStatus)
+		}
+		service.Name = taskEnv.ReplaceEnv(service.Name)
+		service.PortLabel = taskEnv.ReplaceEnv(service.PortLabel)
+		service.Tags = taskEnv.ParseAndReplace(service.Tags)
+	}
 }
 
 // buildTaskDir creates the task directory before driver.Prestart. It is safe
@@ -1355,6 +1379,10 @@ func (r *TaskRunner) handleUpdate(update *structs.Allocation) error {
 	// Store the updated alloc.
 	r.alloc = update
 	r.task = updatedTask
+
+	//FIXME is there a better place to do this? used to be in executor
+	// Prepare services
+	interpolateServices(r.getTaskEnv(), r.task)
 
 	// Register the new service+checks
 	if err := r.consul.RegisterTask(r.alloc.ID, r.task, scriptExec); err != nil {
