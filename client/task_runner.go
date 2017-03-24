@@ -1213,7 +1213,7 @@ func (r *TaskRunner) startTask() error {
 	//TODO Add validation so this assertion should never fail
 	// RegisterTask properly handles scriptExec being nil, so it just
 	// ignore the ok value.
-	scriptExec, _ := drv.(consul.ScriptExecutor)
+	scriptExec, _ := handle.(consul.ScriptExecutor)
 	if err := r.consul.RegisterTask(r.alloc.ID, r.task, scriptExec); err != nil {
 		//TODO handle errors?!
 		//TODO could break into prepare & submit steps as only preperation can error...

@@ -5,8 +5,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	consulapi "github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
@@ -36,6 +39,9 @@ func TestConsul_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short set; skipping")
 	}
+	if unix.Geteuid() != 0 {
+		t.Skip("Must be run as root")
+	}
 	// Create an embedded Consul server
 	testconsul := testutil.NewTestServerConfig(t, func(c *testutil.TestServerConfig) {
 		// If -v wasn't specified squelch consul logging
@@ -60,6 +66,10 @@ func TestConsul_Integration(t *testing.T) {
 
 	alloc := mock.Alloc()
 	task := alloc.Job.TaskGroups[0].Tasks[0]
+	task.Driver = "mock_driver"
+	task.Config = map[string]interface{}{
+		"run_for": "1h",
+	}
 	// Choose a port that shouldn't be in use
 	task.Resources.Networks[0].ReservedPorts = []structs.Port{{Label: "http", Value: 3}}
 	task.Services = []*structs.Service{
@@ -81,7 +91,7 @@ func TestConsul_Integration(t *testing.T) {
 					Name:     "httpd-script-check",
 					Type:     "script",
 					Command:  "/bin/true",
-					Interval: time.Second,
+					Interval: 10 * time.Second,
 					Timeout:  10 * time.Second,
 				},
 			},
@@ -94,8 +104,14 @@ func TestConsul_Integration(t *testing.T) {
 	}
 
 	logger := testLogger()
-	noopUpdate := func(name, state string, event *structs.TaskEvent) {}
+	logUpdate := func(name, state string, event *structs.TaskEvent) {
+		debug.PrintStack()
+		logger.Printf("[TEST] updater: name=%q state=%q event=%v", name, state, event)
+	}
 	allocDir := allocdir.NewAllocDir(logger, filepath.Join(conf.AllocDir, alloc.ID))
+	if err := allocDir.Build(); err != nil {
+		t.Fatalf("error building alloc dir: %v", err)
+	}
 	taskDir := allocDir.NewTaskDir(task.Name)
 	vclient := vaultclient.NewMockVaultClient()
 	consulClient, err := consulapi.NewClient(consulConfig)
@@ -103,7 +119,13 @@ func TestConsul_Integration(t *testing.T) {
 		t.Fatalf("error creating consul client: %v", err)
 	}
 	serviceClient := consul.NewServiceClient(consulClient.Agent(), logger)
-	tr := client.NewTaskRunner(logger, conf, noopUpdate, taskDir, alloc, task, vclient, serviceClient)
+	defer serviceClient.Shutdown() // just-in-case cleanup
+	consulRan := make(chan struct{})
+	go func() {
+		serviceClient.Run()
+		close(consulRan)
+	}()
+	tr := client.NewTaskRunner(logger, conf, logUpdate, taskDir, alloc, task, vclient, serviceClient)
 	tr.MarkReceived()
 	ran := make(chan struct{})
 	go func() {
@@ -111,7 +133,42 @@ func TestConsul_Integration(t *testing.T) {
 		close(ran)
 	}()
 
-	//TODO Actually test something!
+	// Block waiting for the service to appear
+	catalog := consulClient.Catalog()
+	res, meta, err := catalog.Service("httpd2", "test", nil)
+	if len(res) == 0 {
+		// Expected initial request to fail, do a blocking query
+		res, meta, err = catalog.Service("httpd2", "test", &consulapi.QueryOptions{WaitIndex: meta.LastIndex + 1, WaitTime: 10 * time.Second})
+		if err != nil {
+			t.Fatalf("error querying for service: %v", err)
+		}
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 service but found %d:\n%#v", len(res), res)
+	}
+
+	// Assert the service with the checks exists
+	res, meta, err = catalog.Service("httpd", "http", &consulapi.QueryOptions{WaitIndex: meta.LastIndex + 1, WaitTime: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("error querying for service: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("exepcted 1 service but found %d:\n%#v", len(res), res)
+	}
+
+	// Assert the script check passes (mock_driver script checks always pass)
+	checks, meta, err := consulClient.Health().Check("httpd", &consulapi.QueryOptions{WaitIndex: meta.LastIndex + 1, WaitTime: 10 * time.Second})
+	panic("TODO")
+
+	// Kill the task
 	tr.Kill("", "", false)
-	<-ran
+
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for Run() to exit")
+	}
+
+	// Ensure Consul is clean
+	//TODO
 }
